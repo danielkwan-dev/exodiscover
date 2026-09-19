@@ -50,7 +50,7 @@ make install     # pip install -e ".[dev,api]", then npm install in web/
 Then, in two terminals:
 
 ```bash
-make serve       # FastAPI on :8000, interactive docs at /docs
+make serve       # Flask on :8000, interactive docs at /docs
 make web         # React UI on :5173
 ```
 
@@ -61,8 +61,8 @@ Without `make` (Windows, or no GNU make installed):
 ```bash
 pip install -e ".[dev,api]"
 cd web && npm install && cd ..
-uvicorn api.main:app --reload --port 8000     # terminal 1
-cd web && npm run dev                         # terminal 2
+flask --app api.wsgi run --port 8000 --reload  # terminal 1
+cd web && npm run dev                          # terminal 2
 ```
 
 Or run the whole stack with `docker compose up --build`.
@@ -88,15 +88,15 @@ make lint        # ruff, mypy, eslint
 
 ```
 ml/exodiscover/    ingest, leakage firewall, physics features, training, evaluation
-api/               FastAPI: typed prediction, batch CSV, SHAP, metrics, sky map
+api/               Flask: typed prediction, batch CSV, SHAP, metrics, sky map
 web/               React and WebGL, reading from the API
 docs/              LEAKAGE.md, MODEL_CARD.md, metrics/
-tests/             128 Python tests and 28 web tests, offline against fixtures
+tests/             141 Python tests and 36 web tests, offline against fixtures
 ```
 
 [`docs/LEAKAGE.md`](docs/LEAKAGE.md) covers the leakage investigation.
 [`docs/MODEL_CARD.md`](docs/MODEL_CARD.md) records intended use and limitations.
 
-Python 3.11, scikit-learn, CatBoost/XGBoost/LightGBM, Optuna, SHAP, FastAPI,
-React, TypeScript, Vite, Tailwind, pytest, vitest, ruff, mypy, GitHub Actions.
-CPU only.
+Python 3.11, scikit-learn, CatBoost/XGBoost/LightGBM, Optuna, SHAP, Flask,
+Pydantic, gunicorn, React, TypeScript, Vite, Tailwind, pytest, vitest, ruff,
+mypy, GitHub Actions. CPU only.

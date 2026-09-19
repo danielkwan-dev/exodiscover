@@ -1,9 +1,14 @@
 """Request and response contracts.
 
-Every field carries the unit it is measured in. The original Flask endpoint
-accepted an unvalidated CSV and silently truncated it to 2000 rows; these
-models make the contract explicit and reject bad input with a 422 that says
-which field was wrong.
+Every field carries the unit it is measured in. The original endpoint accepted
+an unvalidated CSV and silently truncated it to 2000 rows; these models make
+the contract explicit and reject bad input with a 422 that says which field was
+wrong.
+
+They are load-bearing in three places, not one: `api.validation` checks request
+bodies against them, the routes serialise responses back through them, and
+`api.openapi` generates the published schema from them. That last one is why a
+field added here needs no edit anywhere else to appear at `/docs`.
 """
 
 from __future__ import annotations

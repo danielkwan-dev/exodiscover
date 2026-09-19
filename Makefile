@@ -22,7 +22,7 @@ lint:
 	cd web && npm run lint
 
 serve:
-	uvicorn api.main:app --reload --port 8000
+	flask --app api.wsgi run --port 8000 --reload
 
 web:
 	cd web && npm run dev

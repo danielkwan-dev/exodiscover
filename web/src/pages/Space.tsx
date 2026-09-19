@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
+import ModelPerformance from "../components/ModelPerformance";
 import { api, type SkyObject } from "../lib/api";
 import { celestialToCartesian } from "../lib/projection";
 import { createStarfield, type Camera, type Starfield } from "../lib/starfield";
@@ -40,6 +41,15 @@ const Space = () => {
   const { data, isPending, error } = useQuery({
     queryKey: ["skymap"],
     queryFn: api.skymap,
+    retry: false,
+  });
+
+  // Separate query, deliberately not gating the scene. A checkout that has
+  // never run `exo train` has no metrics.json and gets a 503 here; the
+  // catalogue is still worth showing, so this failure stays silent.
+  const { data: metrics } = useQuery({
+    queryKey: ["metrics"],
+    queryFn: api.metrics,
     retry: false,
   });
 
@@ -240,6 +250,10 @@ const Space = () => {
 
       {data && (
         <>
+          <div className="absolute left-6 top-6">
+            <ModelPerformance transfer={metrics?.transfer} />
+          </div>
+
           {/* Filters: the only persistent text in the scene. */}
           <div className="absolute bottom-6 left-6 w-64 space-y-4 rounded border border-white/10 bg-black/50 p-4 text-xs backdrop-blur-sm">
             <div>
