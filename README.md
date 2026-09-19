@@ -32,7 +32,14 @@ objects form a dense beam in one direction. TESS surveyed the whole sky, so its
 Clicking a planet shows the model's prediction, the archive's disposition, and
 the SHAP terms behind the score. Both missions are scored by the same
 11-feature model, the only features the two catalogues share, so the
-probabilities are comparable.
+probabilities are comparable — and it is the same model the 77% above
+describes, loaded from `models/production/transfer.joblib` rather than refitted
+at render time.
+
+Kepler objects with a resolved disposition are in that model's training data,
+so those are scored **out of fold**: each gets its probability from a
+star-grouped fold that never saw it. Nothing on screen is a model's opinion of
+a row it already learned.
 
 ![A selected planet](docs/screenshots/space-detail.png)
 
@@ -91,7 +98,8 @@ ml/exodiscover/    ingest, leakage firewall, physics features, training, evaluat
 api/               Flask: typed prediction, batch CSV, SHAP, metrics, sky map
 web/               React and WebGL, reading from the API
 docs/              LEAKAGE.md, MODEL_CARD.md, metrics/
-tests/             141 Python tests and 36 web tests, offline against fixtures
+models/production/ model.joblib (Kepler triage) and transfer.joblib (cross-mission)
+tests/             146 Python tests and 36 web tests, offline against fixtures
 ```
 
 [`docs/LEAKAGE.md`](docs/LEAKAGE.md) covers the leakage investigation.

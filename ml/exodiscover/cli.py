@@ -16,7 +16,6 @@ import joblib
 import numpy as np
 import pandas as pd
 import typer
-from sklearn.ensemble import HistGradientBoostingClassifier
 
 from exodiscover import skymap
 from exodiscover.config import settings
@@ -82,9 +81,20 @@ def train_cmd(
     # the raw frame that still carries them.
     assert_no_derived_leakage(X, binary)
 
-    typer.echo(f"training on {len(X)} KOIs across {groups.nunique()} stars")
+    # The split comes first, and everything that *chooses* anything -- the
+    # ladder, the Optuna search -- sees only the training stars. Picking a
+    # model on rows that later produce the reported score is the same class of
+    # error as a leaky feature: the number comes back optimistic and nothing in
+    # the run says so. The held-out stars are touched once, at evaluation.
+    X_tr, X_te, y_tr, y_te = grouped_train_test_split(X, y, groups)
+    train_groups = groups.loc[X_tr.index]
+    test_groups = groups.loc[X_te.index]
+    typer.echo(
+        f"training on {len(X_tr)} KOIs across {train_groups.nunique()} stars; "
+        f"{len(X_te)} KOIs across {test_groups.nunique()} stars held out"
+    )
 
-    ladder = train_mod.fit_candidates(X, y, groups)
+    ladder = train_mod.fit_candidates(X_tr, y_tr, train_groups)
     best = ladder[0]
     typer.echo(
         f"best on the ladder: {best.name} "
@@ -100,8 +110,10 @@ def train_cmd(
         # unfair -- the ensemble's members would never have been tuned at all.
         tunable = next((r for r in ladder if r.name in TUNABLE), None)
         if tunable is not None:
-            tuned = train_mod.tune_best(X, y, groups, tunable.name, n_trials=trials)
-            tuned_scores = train_mod.score_estimator(tuned, X, y, groups)
+            tuned = train_mod.tune_best(
+                X_tr, y_tr, train_groups, tunable.name, n_trials=trials
+            )
+            tuned_scores = train_mod.score_estimator(tuned, X_tr, y_tr, train_groups)
             typer.echo(
                 f"tuned {tunable.name}: PR-AUC {tunable.cv_scores['pr_auc']:.4f} "
                 f"-> {tuned_scores['pr_auc']:.4f} ({trials} trials)"
@@ -110,10 +122,7 @@ def train_cmd(
                 estimator, selected = tuned, f"{tunable.name} (tuned)"
     typer.echo(f"selected: {selected}")
 
-    X_tr, X_te, y_tr, y_te = grouped_train_test_split(X, y, groups)
-    model, calibration = train_mod.build_calibrated(
-        estimator, X_tr, y_tr, groups.loc[X_tr.index]
-    )
+    model, calibration = train_mod.build_calibrated(estimator, X_tr, y_tr, train_groups)
     typer.echo(
         f"calibration: {calibration['chosen']} "
         f"(Brier isotonic {calibration['brier_by_method']['isotonic']:.4f} vs "
@@ -123,7 +132,6 @@ def train_cmd(
     # Overfitting is a gap, not a level. Measure it on the uncalibrated
     # estimator: the calibration wrapper is fitted on a slice of the training
     # data, so scoring it against that same data would understate the gap.
-    train_groups = groups.loc[X_tr.index]
     gap = overfit.generalisation_gap(estimator, X_tr, y_tr, X_te, y_te)
     curve = overfit.learning_curve(estimator, X_tr, y_tr, train_groups, X_te, y_te)
     verdict = "OVERFIT" if gap["overfit"] else "generalises"
@@ -135,7 +143,7 @@ def train_cmd(
 
     test_metrics = evaluate_binary(model, X_te, y_te)
     y_prob = model.predict_proba(X_te)[:, 1]
-    test_metrics["ci95"] = bootstrap_ci(y_te, y_prob, groups.loc[X_te.index])
+    test_metrics["ci95"] = bootstrap_ci(y_te, y_prob, test_groups)
     roc_lo, roc_hi = test_metrics["ci95"]["roc_auc"]
     typer.echo(
         f"held-out stars: ROC-AUC {test_metrics['roc_auc']:.4f} "
@@ -162,9 +170,10 @@ def train_cmd(
         typer.echo(f"leakage guard ok: clean {clean:.4f} vs leaky {leaky:.4f}")
 
     toi_path = settings.raw_dir / "toi.csv"
+    transfer_result = transfer.run_transfer(koi, _read("toi")) if toi_path.exists() else None
     transfer_block = (
-        transfer.run_transfer(koi, _read("toi"))
-        if toi_path.exists()
+        transfer_result.metrics
+        if transfer_result is not None
         else {"in_domain": {}, "zero_shot": {}}
     )
 
@@ -179,7 +188,7 @@ def train_cmd(
             "n_train_rows": int(len(X_tr)),
             "n_train_stars": int(train_groups.nunique()),
             "n_test_rows": int(len(X_te)),
-            "n_test_stars": int(groups.loc[X_te.index].nunique()),
+            "n_test_stars": int(test_groups.nunique()),
         },
         # Answers "is 0.98 too good to be true" with measurements rather than
         # assertion: the train-minus-held-out gap, and whether the score
@@ -212,6 +221,28 @@ def train_cmd(
     size_mb = bundle_path.stat().st_size / 1024 / 1024
     typer.echo(f"wrote {bundle_path} ({size_mb:.1f} MB)")
 
+    # The shared-feature model, kept because the reported zero-shot figure is
+    # its number and the sky map has to show the same model the panel quotes.
+    # Two artifacts with two stated jobs: this one is the cross-mission
+    # scorer, model.joblib is the tuned Kepler triage model.
+    if transfer_result is not None:
+        shared_path = settings.models_dir / "transfer.joblib"
+        joblib.dump(
+            {
+                "model": transfer_result.model,
+                "features": transfer.SHARED_FEATURES,
+                "version": MODEL_VERSION,
+            },
+            shared_path,
+            compress=3,
+        )
+        zero_shot = transfer_block["zero_shot"]
+        typer.echo(
+            f"wrote {shared_path} (zero-shot on TESS: "
+            f"{zero_shot['accuracy']:.4f} accuracy vs "
+            f"{zero_shot['majority_baseline']:.4f} baseline)"
+        )
+
     ranked = rank_candidates(model, koi, top_n=50)
     ranked_path = settings.metrics_dir / "top_candidates.csv"
     ranked.to_csv(ranked_path, index=False)
@@ -229,21 +260,48 @@ def skymap_cmd() -> None:
     stellar = ingest.load_cached("stellar")
     toi = ingest.load_cached("toi")
 
-    # One model for both missions. The shipped 17-feature model cannot score
-    # TESS -- only 11 features exist in both catalogs -- and scoring the two
+    # One model for both missions, and specifically the model whose zero-shot
+    # figure the app reports. The shipped 17-feature model cannot score TESS --
+    # only 11 features exist in both catalogs -- and scoring the two missions
     # with different models would make their probabilities incomparable, which
-    # is the one thing this view puts side by side.
-    shared = transfer.SHARED_FEATURES
-    resolved = koi[koi["koi_disposition"].isin(["CONFIRMED", "FALSE POSITIVE"])]
-    resolved = add_multiplicity(resolved).reset_index(drop=True)
-    X_fit = build_features(resolved)[shared]
-    y_fit = (resolved["koi_disposition"] == "CONFIRMED").astype(int)
-    model = HistGradientBoostingClassifier(random_state=settings.random_seed)
-    model.fit(X_fit, y_fit)
-    typer.echo(f"scoring both missions with a {len(shared)}-feature shared model")
+    # is the one thing this view puts side by side. Loading the persisted
+    # artifact rather than refitting one here is what keeps the number on
+    # screen and the number in metrics.json describing the same estimator.
+    shared_path = settings.models_dir / "transfer.joblib"
+    if not shared_path.exists():
+        raise typer.BadParameter(
+            f"no shared-feature model at {shared_path}. Run `exo train` first: "
+            "the sky map scores both missions with the model whose zero-shot "
+            "accuracy the app reports, rather than fitting its own."
+        )
+    bundle = joblib.load(shared_path)
+    model, shared = bundle["model"], list(bundle["features"])
 
-    def score(X: pd.DataFrame):
-        return model.predict_proba(X[shared])[:, 1]
+    # Every Kepler object with a resolved disposition was in this model's
+    # training data. Those rows get an out-of-fold probability instead, so
+    # nothing on screen is a model's opinion of a row it already saw. Kepler
+    # candidates and every TESS object were never in training and are scored
+    # directly.
+    counted = add_multiplicity(koi)
+    resolved = counted[
+        counted["koi_disposition"].isin(["CONFIRMED", "FALSE POSITIVE"])
+    ].reset_index(drop=True)
+    oof = skymap.out_of_fold_probabilities(
+        model,
+        build_features(resolved)[shared],
+        (resolved["koi_disposition"] == "CONFIRMED").astype(int),
+        resolved["kepid"],
+    )
+    out_of_fold = dict(zip(resolved["kepoi_name"], oof, strict=True))
+    typer.echo(
+        f"scoring both missions with the {len(shared)}-feature shared model; "
+        f"{len(out_of_fold)} trained-on Kepler rows scored out of fold"
+    )
+
+    def score(X: pd.DataFrame, frame: pd.DataFrame):
+        direct = model.predict_proba(X[shared])[:, 1]
+        held = frame["name"].map(out_of_fold)
+        return np.where(held.notna(), held.to_numpy(dtype=float), direct)
 
     def reasons(X: pd.DataFrame) -> list[str]:
         """Top contributions per row, precomputed so a click costs nothing."""

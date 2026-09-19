@@ -19,6 +19,33 @@ quantities like signal-to-noise or KOI multiplicity.
 In-domain Kepler results, and the ablations establishing that they are
 leakage-free, are in the Performance section below and in `LEAKAGE.md`.
 
+## Two models, two jobs
+
+This project ships two artifacts. They are trained on the same Kepler rows
+under the same grouped splits, and they exist because one question needs
+17 features and the other needs the 11 that TESS can also express.
+
+| | `model.joblib` | `transfer.joblib` |
+|---|---|---|
+| Job | Rank unvetted Kepler candidates | Score Kepler and TESS comparably |
+| Features | 17 | 11 (the shared subset) |
+| Family | Soft-vote ensemble, Optuna-tuned | HistGradientBoosting, untuned |
+| Calibrated | Isotonic | No |
+| Serves | `POST /predict`, `/discoveries` | the sky map, and the figure the app displays |
+| Headline | in-domain ROC-AUC, precision@50 | **77% zero-shot on TESS** |
+
+**The zero-shot accuracy belongs to `transfer.joblib`, not to the ensemble.**
+That distinction used to be invisible: the sky map fitted its own copy of the
+shared model at render time, so every probability the app displayed came from
+an estimator no reported number described. The model is now persisted by
+`exo train` and loaded by `exo skymap`.
+
+Kepler objects with a resolved disposition are in `transfer.joblib`'s training
+data, so the sky map scores those rows **out of fold** — each one gets its
+probability from a grouped fold that never saw it. Kepler candidates and every
+TESS object were never in training and are scored directly. Nothing the app
+displays is a model's opinion of a row it already learned.
+
 ## Intended use
 
 Triage. Ranking a list of unvetted Kepler transit signals so that limited
@@ -47,7 +74,7 @@ ingested but excluded: its
 archive table lacks transit depth and duration, so merging it would introduce a
 missingness pattern that identifies the mission.
 
-## Features
+## Features (`model.joblib`)
 
 17 features, listed in `ml/exodiscover/features/tabular.py::FEATURE_COLUMNS`.
 Beyond the raw archive columns, three are physically derived:
@@ -64,7 +91,7 @@ Eight columns are permanently excluded as target-encoding, and three
 uncertainty features were removed after measurement showed they encode
 post-confirmation parameter refinement. See `LEAKAGE.md`.
 
-## Performance
+## Performance (`transfer.joblib`)
 
 Zero-shot on TESS, n = 2,562, base rate 0.495. The model was trained on Kepler
 and has seen no TESS object.
@@ -94,7 +121,7 @@ Restricted to the same 11 shared features, the in-domain reference is ROC-AUC
 figures, confidence intervals from a host-star bootstrap, the model ladder and
 the leakage ablations are all in `docs/metrics/metrics.json` and `LEAKAGE.md`.
 
-## Calibration
+## Calibration (`model.joblib`)
 
 Two methods were fitted and compared on a third, star-disjoint slice that
 neither the base model nor the calibrator had seen:

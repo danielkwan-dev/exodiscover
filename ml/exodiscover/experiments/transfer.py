@@ -8,8 +8,11 @@ because they are unvetted: they carry no ground truth to score against.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix
 
@@ -85,7 +88,20 @@ def _domain_scores(y_true: pd.Series, y_prob: np.ndarray) -> dict:
     }
 
 
-def run_transfer(koi: pd.DataFrame, toi: pd.DataFrame) -> dict:
+@dataclass
+class TransferResult:
+    """The fitted shared-feature model and what it scored.
+
+    The model is returned rather than discarded because the reported 77% is
+    *its* number. Refitting an equivalent one elsewhere -- which the sky map
+    used to do -- produces probabilities that no published figure describes.
+    """
+
+    model: BaseEstimator
+    metrics: dict
+
+
+def run_transfer(koi: pd.DataFrame, toi: pd.DataFrame) -> TransferResult:
     """Train on Kepler, score held-out Kepler and unseen TESS."""
     src = koi[koi["koi_disposition"].isin(["CONFIRMED", "FALSE POSITIVE"])].reset_index(drop=True)
     y_src = (src["koi_disposition"] == "CONFIRMED").astype(int)
@@ -99,7 +115,7 @@ def run_transfer(koi: pd.DataFrame, toi: pd.DataFrame) -> dict:
     in_domain = _domain_scores(y_te, model.predict_proba(X_te)[:, 1])
     zero_shot = _domain_scores(y_tgt, model.predict_proba(X_tgt)[:, 1])
 
-    return {
+    metrics = {
         "shared_features": SHARED_FEATURES,
         "in_domain": in_domain,
         "zero_shot": zero_shot,
@@ -110,3 +126,4 @@ def run_transfer(koi: pd.DataFrame, toi: pd.DataFrame) -> dict:
         # but can no longer say how likely any of them is.
         "brier_ratio": float(zero_shot["brier"] / in_domain["brier"]),
     }
+    return TransferResult(model=model, metrics=metrics)

@@ -128,7 +128,7 @@ def test_ambiguous_toi_dispositions_are_excluded():
 
 
 def test_transfer_reports_both_domains(koi_sample, toi_sample):
-    result = transfer.run_transfer(koi_sample, toi_sample)
+    result = transfer.run_transfer(koi_sample, toi_sample).metrics
     assert 0.0 <= result["zero_shot"]["roc_auc"] <= 1.0
     assert 0.0 <= result["in_domain"]["roc_auc"] <= 1.0
     assert result["zero_shot"]["n"] > 0
@@ -143,7 +143,7 @@ def test_transfer_reports_accuracy_against_its_own_baseline(koi_sample, toi_samp
     already scores 63% on one and 51% on the other. Reporting the baseline
     beside each is what stops the comparison being misread.
     """
-    result = transfer.run_transfer(koi_sample, toi_sample)
+    result = transfer.run_transfer(koi_sample, toi_sample).metrics
     for domain in ("in_domain", "zero_shot"):
         block = result[domain]
         assert 0.0 <= block["accuracy"] <= 1.0

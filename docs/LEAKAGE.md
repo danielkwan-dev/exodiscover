@@ -208,11 +208,60 @@ of the top 50 candidates land on exactly 1.0, which is useless for ordering. So
 the two jobs are split: the calibrated probability is displayed, the raw model
 score does the ranking.
 
-**Not done: nested cross-validation.** The Optuna search saw the CV folds, so
-model selection is mildly optimistic. The held-out test set was never touched by
-tuning, and the bootstrap interval is computed on it — but nesting the search
-inside an outer loop would multiply a 20-minute run by the outer fold count,
-beyond the CPU budget. Recorded here rather than passed over.
+**Not done: nested cross-validation.** The Optuna search scores against the
+same grouped folds that rank the ladder, so the *cross-validated* figures for
+the selected model are mildly optimistic. Nesting the search inside an outer
+loop would multiply a 20-minute run by the outer fold count, which is beyond
+the CPU budget. What the nesting would protect — the reported held-out numbers
+— is protected instead by the order of operations: the split happens first, and
+selection and tuning see only the training stars.
+
+### That order was wrong until recently
+
+This section previously claimed the held-out set was never touched by tuning.
+It was. `fit_candidates` and `tune_best` both ran on the full feature matrix,
+and `grouped_train_test_split` carved the test set out of it *afterwards* — so
+every held-out star had already sat inside the folds that chose the model and
+its hyperparameters — in the one document that exists to catch exactly this.
+
+**Corrected and re-measured: it was worth 0.0000.** Every reported figure is
+identical to four decimal places before and after the fix.
+
+| | leaked selection | split first |
+|---|---|---|
+| In-domain ROC-AUC | 0.9839 | 0.9839 |
+| In-domain PR-AUC | 0.9666 | 0.9666 |
+| In-domain Brier | 0.0440 | 0.0440 |
+| precision@50 | 1.000 | 1.000 |
+
+The reason is the same arithmetic that made split leakage a non-event in §2.
+`soft_vote` tops the ladder by 0.0006 PR-AUC over `xgboost`, against a
+fold-to-fold spread of 0.0049 — the families are too close for the choice
+between them to carry information about any particular fold. And the winner is
+an ensemble, which this project does not tune, so the selected estimator had no
+searched hyperparameters for a leak to bite on. Selection had nothing to
+overfit *to*.
+
+That is the honest finding, and it is not the same as the defect being
+harmless. The measurement is a property of this ladder: if one family had won
+by a clear margin, or if a tuned family had taken the top slot, the same code
+path would have produced an inflated number with nothing to signal it.
+
+It is worth stating plainly rather than quietly correcting: a name-based guard
+and a value-based guard both passed, because neither looks at *when* a row is
+used. Leakage through the order of operations is invisible to a check on the
+feature matrix.
+
+The split now runs before anything that makes a choice, and two tests fail the
+build if that is ever reversed —
+`test_the_ladder_never_sees_a_held_out_star` and
+`test_tuning_never_sees_a_held_out_star` in `tests/test_cli.py`, which compare
+the stars handed to model selection against the stars the reported metrics are
+computed on.
+
+**The zero-shot transfer number was never affected.** `run_transfer` fits its
+own model on its own grouped split with no ladder and no Optuna, so the 77% on
+TESS is unchanged by this correction.
 
 ## Summary
 

@@ -23,8 +23,11 @@ from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, clone
+from sklearn.model_selection import cross_val_predict
 
 from exodiscover.data.schema import TOI_LABEL_MAP
+from exodiscover.data.splits import make_cv
 from exodiscover.features.tabular import add_multiplicity, build_features
 
 #: Parsecs to light years.
@@ -62,8 +65,38 @@ TOI_RENAME: dict[str, str] = {
 #: The two archives use different words for the same three states.
 DISPOSITION = {2: "CONFIRMED", 1: "CANDIDATE", 0: "FALSE POSITIVE"}
 
-Scorer = Callable[[pd.DataFrame], np.ndarray]
+#: Scratch column holding each row's position in the source catalog, so a
+#: join that drops rows cannot silently break the frame/feature correspondence.
+SOURCE_ROW = "_source_row"
+
+#: Takes the aligned feature matrix and the frame describing those same rows.
+#: The frame is there because not every row should be scored the same way: a
+#: Kepler object with a resolved disposition was in the model's training data
+#: and has to come from a fold that never saw it.
+Scorer = Callable[[pd.DataFrame, pd.DataFrame], np.ndarray]
 Reasoner = Callable[[pd.DataFrame], list[str]]
+
+
+def out_of_fold_probabilities(
+    model: BaseEstimator, X: pd.DataFrame, y: pd.Series, groups: pd.Series
+) -> np.ndarray:
+    """Probability for every row, from a fold that never saw it.
+
+    The shared model is fitted on Kepler, so every Kepler object with a
+    resolved disposition is in its training data. Scoring those rows with that
+    model would put an in-sample fit on screen and label it a prediction --
+    the number would be optimistic for exactly the objects a viewer is most
+    likely to click, since they are the ones with a known answer to compare
+    against.
+
+    Folds are grouped by host star for the same reason every other split in
+    this project is: a sibling KOI left in the training fold carries the same
+    stellar parameters and would leak the answer back in.
+    """
+    probabilities = cross_val_predict(
+        clone(model), X, y, groups=groups, cv=make_cv(), method="predict_proba"
+    )
+    return np.asarray(probabilities)[:, 1]
 
 
 def usable_distances(stellar: pd.DataFrame) -> pd.DataFrame:
@@ -89,12 +122,21 @@ def _kepler_frame(koi: pd.DataFrame, stellar: pd.DataFrame) -> tuple[pd.DataFram
             "period_days": pd.to_numeric(counted.get("koi_period"), errors="coerce"),
         }
     )
+    # Carry the catalog row number through the join. The join is what makes
+    # this necessary: it drops every star with no usable distance and returns a
+    # fresh RangeIndex, so the merged frame's index no longer says which
+    # catalog row each row came from. Selecting features by that index returned
+    # the first N feature rows instead, and every object after the first
+    # dropped star was displayed with a different planet's probability and a
+    # different planet's SHAP terms.
+    frame[SOURCE_ROW] = counted.index
     merged = frame.merge(
         usable_distances(stellar).rename(columns={"kepid": "star_id"}),
         on="star_id",
         how="inner",
     )
-    return merged, features.loc[merged.index.intersection(features.index)]
+    aligned = features.loc[merged[SOURCE_ROW]].reset_index(drop=True)
+    return merged.drop(columns=SOURCE_ROW), aligned
 
 
 def _tess_frame(toi: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -141,7 +183,7 @@ def build_skymap(
     for frame, features in (_kepler_frame(koi, stellar), _tess_frame(toi)):
         aligned = features.loc[frame.index]
         out = frame.copy()
-        out["probability"] = np.asarray(score(aligned), dtype=float)
+        out["probability"] = np.asarray(score(aligned, frame), dtype=float)
         out["top_reasons"] = reasons(aligned)
         frames.append(out)
 
